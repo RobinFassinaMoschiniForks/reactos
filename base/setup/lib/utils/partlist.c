@@ -1203,7 +1203,7 @@ InitializePartitionEntry(
         PartEntry->SectorCount.QuadPart = StartSector - PartEntry->StartSector.QuadPart;
     }
 
-    /* Convert the partition entry to 'New (Unformatted)' */
+    /* Convert to a new partition entry */
     PartEntry->New = TRUE;
     PartEntry->IsPartitioned = TRUE;
 
@@ -1214,6 +1214,7 @@ InitializePartitionEntry(
     ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
 
     RtlZeroMemory(&PartEntry->Volume, sizeof(PartEntry->Volume));
+    /**/PartEntry->Volume.New = TRUE;/**/
     PartEntry->BootIndicator = FALSE;
 
     DPRINT1("First Sector : %I64u\n", PartEntry->StartSector.QuadPart);
@@ -2825,7 +2826,7 @@ UpdateDiskLayout(
             PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[Index];
             PartEntry->PartitionIndex = Index;
 
-            /* Reset the current partition number only for newly-created (unmounted) partitions */
+            /* Reset the current partition number only for not-yet written partitions */
             if (PartEntry->New)
                 PartEntry->PartitionNumber = 0;
 
@@ -2866,7 +2867,7 @@ UpdateDiskLayout(
             PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[Index];
             PartEntry->PartitionIndex = Index;
 
-            /* Reset the current partition number only for newly-created (unmounted) partitions */
+            /* Reset the current partition number only for not-yet written partitions */
             if (PartEntry->New)
                 PartEntry->PartitionNumber = 0;
 
@@ -3188,10 +3189,6 @@ CreateExtendedPartition(
         /* Partition starts above the 8.4GB boundary ==> LBA partition */
         PartEntry->PartitionType = PARTITION_XINT13_EXTENDED;
     }
-
-    // FIXME? Possibly to make GetNextUnformattedPartition work (i.e. skip the extended partition container)
-    PartEntry->New = FALSE;
-    // PartEntry->Volume.FormatState = Formatted;
 
     ASSERT(PartEntry->IsPartitioned &&
            !PartEntry->LogicalPartition &&
@@ -4039,6 +4036,7 @@ WritePartitions(
     PartEntry = NULL;
     while ((PartEntry = GetAdjPartListEntry(&DiskEntry->PrimaryPartListHead, PartEntry, TRUE)))
     {
+        PartEntry->New = FALSE;
         if (PartEntry->IsPartitioned)
         {
             ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
@@ -4051,6 +4049,7 @@ WritePartitions(
     PartEntry = NULL;
     while ((PartEntry = GetAdjPartListEntry(&DiskEntry->LogicalPartListHead, PartEntry, TRUE)))
     {
+        PartEntry->New = FALSE;
         if (PartEntry->IsPartitioned)
         {
             ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
@@ -4066,6 +4065,7 @@ WritePartitions(
     {
         // ASSERT(PartEntry->IsPartitioned);
         // ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
+        PartEntry->New = FALSE;
         PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[PartEntry->PartitionIndex];
         PartEntry->PartitionNumber = PartitionInfo->PartitionNumber;
     }
