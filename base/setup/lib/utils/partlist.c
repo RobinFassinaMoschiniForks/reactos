@@ -4029,6 +4029,16 @@ WritePartitions(
     DumpPartitionTable(DiskEntry);
 #endif
 
+#if 0 // TODO: Investigate whether this is really necessary??
+    {
+    ULONG i;
+    for (i = 0; i < DiskEntry->LayoutBuffer->PartitionCount; i++)
+    {
+        DiskEntry->LayoutBuffer->PartitionEntry[i].RewritePartition = FALSE;
+    }
+    }
+#endif
+
     /* Update the partition numbers */
 
 #if 0
@@ -4041,6 +4051,7 @@ WritePartitions(
         {
             ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
             PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[PartEntry->PartitionIndex];
+            /**/PartitionInfo->RewritePartition = FALSE;/**/
             PartEntry->PartitionNumber = PartitionInfo->PartitionNumber;
         }
     }
@@ -4054,6 +4065,7 @@ WritePartitions(
         {
             ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
             PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[PartEntry->PartitionIndex];
+            /**/PartitionInfo->RewritePartition = FALSE;/**/
             PartEntry->PartitionNumber = PartitionInfo->PartitionNumber;
         }
     }
@@ -4067,6 +4079,7 @@ WritePartitions(
         // ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
         PartEntry->New = FALSE;
         PartitionInfo = &DiskEntry->LayoutBuffer->PartitionEntry[PartEntry->PartitionIndex];
+        /**/PartitionInfo->RewritePartition = FALSE;/**/
         PartEntry->PartitionNumber = PartitionInfo->PartitionNumber;
     }
 #endif
