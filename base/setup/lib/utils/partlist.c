@@ -3608,6 +3608,11 @@ FindSupportedSystemPartition(
      * should be our system partition.
      */
     DiskEntry = GetSystemDisk(List);
+    if (!DiskEntry)
+    {
+        /* No system disk found, directly go check the alternative disk */
+        goto UseAlternativeDisk;
+    }
 
     if (DiskEntry->DiskStyle == PARTITION_STYLE_GPT)
     {
