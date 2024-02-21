@@ -843,7 +843,9 @@ ScrollUpDownPartitionList(
     _In_ BOOLEAN Direction)
 {
     PPARTENTRY PartEntry =
-        GetAdjPartition(ListUi->List, ListUi->CurrentPartition, Direction);
+        GetAdjPartition(ListUi->List, ListUi->CurrentPartition,
+                        (Direction ? ENUM_REGION_NEXT : ENUM_REGION_PREV)
+                            | ENUM_REGION_MBR_BY_ORDER);
     if (PartEntry)
     {
         ListUi->CurrentPartition = PartEntry;
