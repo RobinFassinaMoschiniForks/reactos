@@ -559,7 +559,7 @@ Quit:
                CurrentPart->PartitionType,
                CurrentPart->IsPartitioned ? "TRUE" : "FALSE",
                CurrentPart->New ? "Yes" : "No",
-               CurrentPart->Volume.FormatState);
+               CurrentPart->Volume ? CurrentPart->Volume->FormatState : -1);
     }
     return CurrentPart;
 }
@@ -631,7 +631,10 @@ AssignDriveLetters(
         while ((PartEntry = GetAdjDiskRegion(DiskEntry, PartEntry,
                                              ENUM_REGION_NEXT /*| ENUM_REGION_PARTITIONED*/ | ENUM_REGION_MBR_PRIMARY_ONLY)))
         {
-            PartEntry->Volume.DriveLetter = 0;
+            if (!PartEntry->Volume)
+                continue;
+
+            PartEntry->Volume->DriveLetter = 0;
 
             if (PartEntry->IsPartitioned &&
                 !IsContainerPartition(PartEntry->PartitionType) &&
@@ -639,7 +642,7 @@ AssignDriveLetters(
                  PartEntry->SectorCount.QuadPart != 0LL))
             {
                 if (Letter <= L'Z')
-                    PartEntry->Volume.DriveLetter = Letter++;
+                    PartEntry->Volume->DriveLetter = Letter++;
             }
         }
     }
@@ -653,14 +656,17 @@ AssignDriveLetters(
         while ((PartEntry = GetAdjDiskRegion(DiskEntry, PartEntry,
                                              ENUM_REGION_NEXT /*| ENUM_REGION_PARTITIONED*/ | ENUM_REGION_MBR_LOGICAL_ONLY)))
         {
-            PartEntry->Volume.DriveLetter = 0;
+            if (!PartEntry->Volume)
+                continue;
+
+            PartEntry->Volume->DriveLetter = 0;
 
             if (PartEntry->IsPartitioned &&
                 (IsRecognizedPartition(PartEntry->PartitionType) ||
                  PartEntry->SectorCount.QuadPart != 0LL))
             {
                 if (Letter <= L'Z')
-                    PartEntry->Volume.DriveLetter = Letter++;
+                    PartEntry->Volume->DriveLetter = Letter++;
             }
         }
     }
@@ -1117,7 +1123,8 @@ CreateInsertBlankRegion(
     NewPartEntry->LogicalPartition = LogicalSpace;
     NewPartEntry->IsPartitioned = FALSE;
     NewPartEntry->PartitionType = PARTITION_ENTRY_UNUSED;
-    RtlZeroMemory(&NewPartEntry->Volume, sizeof(NewPartEntry->Volume));
+    // RtlZeroMemory(&NewPartEntry->Volume, sizeof(NewPartEntry->Volume));
+    NewPartEntry->Volume = NULL;
 
     DPRINT1("First Sector : %I64u\n", NewPartEntry->StartSector.QuadPart);
     DPRINT1("Last Sector  : %I64u\n", NewPartEntry->StartSector.QuadPart + NewPartEntry->SectorCount.QuadPart - 1);
@@ -1224,6 +1231,42 @@ InitializePartitionEntry(
     return TRUE;
 }
 
+
+NTSTATUS
+CreateVolume(
+    _Out_ PVOLINFO* Volume)
+{
+    NTSTATUS Status;
+    PVOLINFO VolumeEntry;
+
+    /* No volume initially */
+    // RtlZeroMemory(&PartEntry->Volume, sizeof(PartEntry->Volume));
+    *Volume = RtlAllocateHeap(ProcessHeap,
+                              HEAP_ZERO_MEMORY,
+                              sizeof(VOLINFO));
+    if (!*Volume)
+        return STATUS_NO_MEMORY;
+    VolumeEntry = *Volume;
+
+#if 0
+    /* Reset some volume information */
+    VolumeEntry->DriveLetter = L'\0';
+    VolumeEntry->FormatState = Unformatted;
+    VolumeEntry->FileSystem[0] = L'\0';
+    RtlZeroMemory(VolumeEntry->VolumeLabel, sizeof(VolumeEntry->VolumeLabel));
+    // VolumeEntry->New = FALSE;
+    VolumeEntry->NeedsCheck = FALSE;
+#endif
+
+    /* Specify the partition as initially unformatted */
+    VolumeEntry->FormatState = Unformatted;
+    VolumeEntry->FileSystem[0] = L'\0';
+
+    /* Initialize the partition volume label */
+    RtlZeroMemory(VolumeEntry->VolumeLabel, sizeof(VolumeEntry->VolumeLabel));
+
+    return STATUS_SUCCESS;
+}
 
 NTSTATUS
 MountVolume(
@@ -1410,7 +1453,7 @@ AddPartitionToDisk(
     PartEntry = RtlAllocateHeap(ProcessHeap,
                                 HEAP_ZERO_MEMORY,
                                 sizeof(PARTENTRY));
-    if (PartEntry == NULL)
+    if (!PartEntry)
         return;
 
     PartEntry->DiskEntry = DiskEntry;
@@ -1428,7 +1471,13 @@ AddPartitionToDisk(
     PartEntry->PartitionIndex = PartitionIndex;
 
     /* No volume initially */
-    RtlZeroMemory(&PartEntry->Volume, sizeof(PartEntry->Volume));
+    CreateVolume(&PartEntry->Volume);
+    if (!PartEntry->Volume)
+    {
+        DPRINT1("Failed to allocate partition volume\n");
+        RtlFreeHeap(ProcessHeap, 0, PartEntry);
+        return;
+    }
 
     if (IsContainerPartition(PartEntry->PartitionType))
     {
@@ -1449,21 +1498,21 @@ AddPartitionToDisk(
         ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
 
         // FIXME: Make a device name for the volume
-        RtlStringCchPrintfW(PartEntry->Volume.DeviceName,
-                            ARRAYSIZE(PartEntry->Volume.DeviceName),
+        RtlStringCchPrintfW(PartEntry->Volume->DeviceName,
+                            ARRAYSIZE(PartEntry->Volume->DeviceName),
                             L"\\Device\\Harddisk%lu\\Partition%lu",
                             DiskEntry->DiskNumber,
                             PartEntry->PartitionNumber);
 
         /* Attach and mount the volume */
-        Status = MountVolume(&PartEntry->Volume,
+        Status = MountVolume(PartEntry->Volume,
                              PartEntry->PartitionType);
         UNREFERENCED_PARAMETER(Status); // FIXME
     }
     else
     {
         /* Unknown partition, hence unknown format (may or may not be actually formatted) */
-        PartEntry->Volume.FormatState = UnknownFormat;
+        PartEntry->Volume->FormatState = UnknownFormat;
     }
 
     InsertDiskRegion(DiskEntry, PartEntry, LogicalPartition);
@@ -2353,8 +2402,9 @@ GetActiveDiskPartition(
 
             DPRINT1("Found active system partition %lu in disk %lu, drive letter %C\n",
                     PartEntry->PartitionNumber, DiskEntry->DiskNumber,
-                    (PartEntry->Volume.DriveLetter == 0)
-                        ? L'-' : PartEntry->Volume.DriveLetter);
+                    PartEntry->Volume &&
+                    (PartEntry->Volume->DriveLetter == 0)
+                        ? L'-' : PartEntry->Volume->DriveLetter);
             break;
         }
     }
@@ -3460,7 +3510,7 @@ DeletePartition(
         PartEntry->BootIndicator = FALSE;
         PartEntry->PartitionType = PARTITION_ENTRY_UNUSED;
 
-        RtlZeroMemory(&PartEntry->Volume, sizeof(PartEntry->Volume));
+        PartEntry->Volume = NULL;
 
         /* Optionally return the freed region */
         if (FreeRegion)
@@ -3493,7 +3543,7 @@ IsSupportedActivePartition(
         return FALSE;
     }
 
-    VolumeEntry = &PartEntry->Volume;
+    VolumeEntry = PartEntry->Volume;
     if (!VolumeEntry)
     {
         /* Still no recognizable volume mounted: partition not supported */
@@ -3625,12 +3675,13 @@ FindSupportedSystemPartition(
     if (ActivePartition && IsSupportedActivePartition(ActivePartition))
     {
         CandidatePartition = ActivePartition;
+        ASSERT(CandidatePartition->Volume);
 
         DPRINT1("Use the current system partition %lu in disk %lu, drive letter %C\n",
                 CandidatePartition->PartitionNumber,
                 CandidatePartition->DiskEntry->DiskNumber,
-                (CandidatePartition->Volume.DriveLetter == 0)
-                    ? L'-' : CandidatePartition->Volume.DriveLetter);
+                (CandidatePartition->Volume->DriveLetter == 0)
+                    ? L'-' : CandidatePartition->Volume->DriveLetter);
 
         /* Return the candidate system partition */
         return CandidatePartition;
@@ -3787,8 +3838,9 @@ UseAlternativeDisk:
             DPRINT1("Use new first active system partition %lu in disk %lu, drive letter %C\n",
                     CandidatePartition->PartitionNumber,
                     CandidatePartition->DiskEntry->DiskNumber,
-                    (CandidatePartition->Volume.DriveLetter == 0)
-                        ? L'-' : CandidatePartition->Volume.DriveLetter);
+                    CandidatePartition->Volume &&
+                    (CandidatePartition->Volume->DriveLetter == 0)
+                        ? L'-' : CandidatePartition->Volume->DriveLetter);
 
             /* Return the candidate system partition */
             return CandidatePartition;
@@ -3832,8 +3884,9 @@ UseAlternativeDisk:
         DPRINT1("Use first active system partition %lu in disk %lu, drive letter %C\n",
                 CandidatePartition->PartitionNumber,
                 CandidatePartition->DiskEntry->DiskNumber,
-                (CandidatePartition->Volume.DriveLetter == 0)
-                    ? L'-' : CandidatePartition->Volume.DriveLetter);
+                CandidatePartition->Volume &&
+                (CandidatePartition->Volume->DriveLetter == 0)
+                    ? L'-' : CandidatePartition->Volume->DriveLetter);
 
         /* Return the candidate system partition */
         return CandidatePartition;
@@ -3871,8 +3924,9 @@ UseAlternativePartition:
     DPRINT1("Use alternative active system partition %lu in disk %lu, drive letter %C\n",
             CandidatePartition->PartitionNumber,
             CandidatePartition->DiskEntry->DiskNumber,
-            (CandidatePartition->Volume.DriveLetter == 0)
-                ? L'-' : CandidatePartition->Volume.DriveLetter);
+            CandidatePartition->Volume &&
+            (CandidatePartition->Volume->DriveLetter == 0)
+                ? L'-' : CandidatePartition->Volume->DriveLetter);
 
     /* Return the candidate system partition */
     return CandidatePartition;
@@ -4229,12 +4283,17 @@ SetMountedDeviceValues(
             if (PartEntry->IsPartitioned) // && !IsContainerPartition(PartEntry->PartitionType)
             {
                 ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
+                if (!PartEntry->Volume)
+                {
+                    DPRINT1("Partition without recognized volume, ignoring\n");
+                    continue;
+                }
 
                 /* Assign a "\DosDevices\#:" mount point to this partition */
-                if (PartEntry->Volume.DriveLetter)
+                if (PartEntry->Volume->DriveLetter)
                 {
                     StartingOffset.QuadPart = GetPartEntryOffsetInBytes(PartEntry);
-                    if (!SetMountedDeviceValue(PartEntry->Volume.DriveLetter,
+                    if (!SetMountedDeviceValue(PartEntry->Volume->DriveLetter,
                                                DiskEntry->LayoutBuffer->Signature,
                                                StartingOffset))
                     {
@@ -4250,12 +4309,17 @@ SetMountedDeviceValues(
             if (PartEntry->IsPartitioned) // && !IsContainerPartition(PartEntry->PartitionType)
             {
                 ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
+                if (!PartEntry->Volume)
+                {
+                    DPRINT1("Partition without recognized volume, ignoring\n");
+                    continue;
+                }
 
                 /* Assign a "\DosDevices\#:" mount point to this partition */
-                if (PartEntry->Volume.DriveLetter)
+                if (PartEntry->Volume->DriveLetter)
                 {
                     StartingOffset.QuadPart = GetPartEntryOffsetInBytes(PartEntry);
-                    if (!SetMountedDeviceValue(PartEntry->Volume.DriveLetter,
+                    if (!SetMountedDeviceValue(PartEntry->Volume->DriveLetter,
                                                DiskEntry->LayoutBuffer->Signature,
                                                StartingOffset))
                     {
@@ -4272,12 +4336,17 @@ SetMountedDeviceValues(
             // ASSERT(PartEntry->IsPartitioned);
             // ASSERT(PartEntry->PartitionType != PARTITION_ENTRY_UNUSED);
             /**/ASSERT(!IsContainerPartition(PartEntry->PartitionType));/**/
+            if (!PartEntry->Volume)
+            {
+                DPRINT1("Partition without recognized volume, ignoring\n");
+                continue;
+            }
 
             /* Assign a "\DosDevices\#:" mount point to this partition */
-            if (PartEntry->Volume.DriveLetter)
+            if (PartEntry->Volume->DriveLetter)
             {
                 StartingOffset.QuadPart = GetPartEntryOffsetInBytes(PartEntry);
-                if (!SetMountedDeviceValue(PartEntry->Volume.DriveLetter,
+                if (!SetMountedDeviceValue(PartEntry->Volume->DriveLetter,
                                            DiskEntry->LayoutBuffer->Signature,
                                            StartingOffset))
                 {

@@ -42,7 +42,7 @@ typedef enum _FORMATSTATE
 
 typedef struct _VOLINFO
 {
-    // LIST_ENTRY ListEntry;
+    LIST_ENTRY ListEntry;
 
     // WCHAR VolumeName[MAX_PATH]; // Name in the DOS/Win32 namespace
     WCHAR DeviceName[MAX_PATH]; // NT device name
@@ -90,7 +90,7 @@ typedef struct _PARTENTRY
     BOOLEAN New;
 
     /* Volume-related properties */
-    VOLINFO Volume; // FIXME: Do it differently later
+    PVOLINFO Volume; // FIXME: Do it differently later
 
 } PARTENTRY, *PPARTENTRY;
 
@@ -150,6 +150,8 @@ typedef struct _DISKENTRY
 
     /* Pointer to the unique extended partition on this disk (Valid only for MBR-partitioned disks) */
     PPARTENTRY ExtendedPartition;
+
+    LIST_ENTRY PendingUnmountVolumesList; /* List of volumes to unmount */
 
 } DISKENTRY, *PDISKENTRY;
 

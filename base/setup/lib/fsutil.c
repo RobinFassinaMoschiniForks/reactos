@@ -754,38 +754,27 @@ Quit:
 //
 
 NTSTATUS
-ChkdskPartition(
-    IN PPARTENTRY PartEntry,
-    IN BOOLEAN FixErrors,
-    IN BOOLEAN Verbose,
-    IN BOOLEAN CheckOnlyIfDirty,
-    IN BOOLEAN ScanDrive,
-    IN PFMIFSCALLBACK Callback)
+ChkdskVolume(
+    _In_ PVOLINFO Volume,
+    _In_ BOOLEAN FixErrors,
+    _In_ BOOLEAN Verbose,
+    _In_ BOOLEAN CheckOnlyIfDirty,
+    _In_ BOOLEAN ScanDrive,
+    _In_opt_ PFMIFSCALLBACK Callback)
 {
     NTSTATUS Status;
-    PDISKENTRY DiskEntry = PartEntry->DiskEntry;
-    // UNICODE_STRING PartitionRootPath;
-    WCHAR PartitionRootPath[MAX_PATH]; // PathBuffer
 
-    ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
-
-    /* HACK: Do not try to check a partition with an unknown filesystem */
-    if (!*PartEntry->Volume.FileSystem)
+    /* HACK: Do not try to check a volume with an unknown filesystem */
+    if (!*Volume->FileSystem)
     {
-        PartEntry->Volume.NeedsCheck = FALSE;
+        Volume->NeedsCheck = FALSE;
         return STATUS_SUCCESS;
     }
 
-    /* Set PartitionRootPath */
-    RtlStringCchPrintfW(PartitionRootPath, ARRAYSIZE(PartitionRootPath),
-                        L"\\Device\\Harddisk%lu\\Partition%lu",
-                        DiskEntry->DiskNumber,
-                        PartEntry->PartitionNumber);
-    DPRINT("PartitionRootPath: %S\n", PartitionRootPath);
-
-    /* Check the partition */
-    Status = ChkdskFileSystem(PartitionRootPath,
-                              PartEntry->Volume.FileSystem,
+    /* Check the volume */
+    DPRINT("Volume->DeviceName: %S\n", Volume->DeviceName);
+    Status = ChkdskFileSystem(Volume->DeviceName,
+                              Volume->FileSystem,
                               FixErrors,
                               Verbose,
                               CheckOnlyIfDirty,
@@ -794,19 +783,93 @@ ChkdskPartition(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    PartEntry->Volume.NeedsCheck = FALSE;
+    Volume->NeedsCheck = FALSE;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+ChkdskPartition(
+    _In_ PPARTENTRY PartEntry,
+    _In_ BOOLEAN FixErrors,
+    _In_ BOOLEAN Verbose,
+    _In_ BOOLEAN CheckOnlyIfDirty,
+    _In_ BOOLEAN ScanDrive,
+    _In_opt_ PFMIFSCALLBACK Callback)
+{
+    NTSTATUS Status;
+
+    ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
+    ASSERT(PartEntry->Volume);
+
+    // if (!PartEntry->Volume) { check_raw_sectors(); } else { check_FS(); }
+
+    /* Check the related volume */
+    Status = ChkdskVolume(PartEntry->Volume,
+                          FixErrors,
+                          Verbose,
+                          CheckOnlyIfDirty,
+                          ScanDrive,
+                          Callback);
+    // if (NT_SUCCESS(Status)) PartEntry->Volume->NeedsCheck = FALSE;
+
+    return Status;
+}
+
+NTSTATUS
+FormatVolume(
+    _In_ PVOLINFO Volume,
+    _In_ PCWSTR FileSystemName,
+    _In_ FMIFS_MEDIA_FLAG MediaFlag,
+    _In_ PCWSTR Label,
+    _In_ BOOLEAN QuickFormat,
+    _In_ ULONG ClusterSize,
+    _In_opt_ PFMIFSCALLBACK Callback)
+{
+    NTSTATUS Status;
+
+    if (!FileSystemName || !*FileSystemName)
+    {
+        DPRINT1("No file system specified?\n");
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+
+    /* Format the volume */
+    DPRINT("Volume->DeviceName: %S\n", Volume->DeviceName);
+    Status = FormatFileSystem(Volume->DeviceName,
+                              FileSystemName,
+                              MediaFlag,
+                              Label,
+                              QuickFormat,
+                              ClusterSize,
+                              Callback);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+//
+// TODO: Here, call a partlist.c function that updates
+// the actual FS name and the label fields of the volume.
+//
+    Volume->FormatState = Formatted;
+
+    /* Set the new partition's file system proper */
+    RtlStringCbCopyW(Volume->FileSystem,
+                     sizeof(Volume->FileSystem),
+                     FileSystemName);
+
+    Volume->New = FALSE;
+
     return STATUS_SUCCESS;
 }
 
 NTSTATUS
 FormatPartition(
-    IN PPARTENTRY PartEntry,
-    IN PCWSTR FileSystemName,
-    IN FMIFS_MEDIA_FLAG MediaFlag,
-    IN PCWSTR Label,
-    IN BOOLEAN QuickFormat,
-    IN ULONG ClusterSize,
-    IN PFMIFSCALLBACK Callback)
+    _In_ PPARTENTRY PartEntry,
+    _In_ PCWSTR FileSystemName,
+    _In_ FMIFS_MEDIA_FLAG MediaFlag,
+    _In_ PCWSTR Label,
+    _In_ BOOLEAN QuickFormat,
+    _In_ ULONG ClusterSize,
+    _In_opt_ PFMIFSCALLBACK Callback)
 {
     NTSTATUS Status;
     PDISKENTRY DiskEntry = PartEntry->DiskEntry;
@@ -876,38 +939,36 @@ FormatPartition(
         return STATUS_PARTITION_FAILURE;
     }
 
-    /* Set PartitionRootPath */
-    RtlStringCchPrintfW(PartitionRootPath, ARRAYSIZE(PartitionRootPath),
-                        L"\\Device\\Harddisk%lu\\Partition%lu",
-                        DiskEntry->DiskNumber,
-                        PartEntry->PartitionNumber);
-    DPRINT("PartitionRootPath: %S\n", PartitionRootPath);
+    /* Create volume if necessary */
+    if (!PartEntry->Volume)
+    {
+        PDISKENTRY DiskEntry = PartEntry->DiskEntry;
 
-    /* Format the partition */
-    Status = FormatFileSystem(PartitionRootPath,
-                              FileSystemName,
-                              MediaFlag,
-                              Label,
-                              QuickFormat,
-                              ClusterSize,
-                              Callback);
-    if (!NT_SUCCESS(Status))
-        return Status;
+        CreateVolume(&PartEntry->Volume);
+        if (!PartEntry->Volume)
+        {
+            DPRINT1("Failed to allocate partition volume\n");
+            return STATUS_UNSUCCESSFUL;
+        }
 
-//
-// TODO: Here, call a partlist.c function that updates
-// the actual FS name and the label fields of the volume.
-//
-    PartEntry->Volume.FormatState = Formatted;
+        // FIXME: Make a device name for the volume
+        RtlStringCchPrintfW(PartEntry->Volume->DeviceName,
+                            ARRAYSIZE(PartEntry->Volume->DeviceName),
+                            L"\\Device\\Harddisk%lu\\Partition%lu",
+                            DiskEntry->DiskNumber,
+                            PartEntry->PartitionNumber);
+    }
 
-    /* Set the new partition's file system proper */
-    RtlStringCbCopyW(PartEntry->Volume.FileSystem,
-                     sizeof(PartEntry->Volume.FileSystem),
-                     FileSystemName);
+    /* Format the related volume */
+    Status = FormatVolume(PartEntry->Volume,
+                          FileSystemName,
+                          MediaFlag,
+                          Label,
+                          QuickFormat,
+                          ClusterSize,
+                          Callback);
 
-    PartEntry->Volume.New = FALSE;
-
-    return STATUS_SUCCESS;
+    return Status;
 }
 
 
@@ -983,16 +1044,17 @@ DoChecking(
     CHECK_PARTITION_INFO PartInfo;
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
+    ASSERT(PartEntry->Volume);
 
 #if 0
     /* HACK: Do not try to check a partition with an unknown filesystem */
-    if (!*PartEntry->Volume.FileSystem)
+    if (!*PartEntry->Volume->FileSystem)
     {
-        PartEntry->Volume.NeedsCheck = FALSE;
+        PartEntry->Volume->NeedsCheck = FALSE;
         return FSVOL_SKIP;
     }
 #else
-    ASSERT(*PartEntry->Volume.FileSystem);
+    ASSERT(*PartEntry->Volume->FileSystem);
 #endif
 
     RtlZeroMemory(&PartInfo, sizeof(PartInfo));
@@ -1047,7 +1109,7 @@ GetNextUnformattedPartition(
     while ((CurrentPart = GetAdjPartition(List, CurrentPart,
                                           ENUM_REGION_NEXT | ENUM_REGION_PARTITIONED)))
     {
-        if (CurrentPart->Volume.New /**/&& (CurrentPart->Volume.FormatState == Unformatted)/**/)
+        if (CurrentPart->Volume->New /**/&& (CurrentPart->Volume->FormatState == Unformatted)/**/)
         {
             /* Found a candidate, return it */
             return CurrentPart;
@@ -1067,10 +1129,13 @@ GetNextUncheckedPartition(
     while ((CurrentPart = GetAdjPartition(List, CurrentPart,
                                           ENUM_REGION_NEXT | ENUM_REGION_PARTITIONED)))
     {
-        if (CurrentPart->Volume.NeedsCheck)
+        if (!CurrentPart->Volume)
+            continue;
+
+        if (CurrentPart->Volume->NeedsCheck)
         {
             /* Found a candidate, return it */
-            ASSERT(CurrentPart->Volume.FormatState == Formatted);
+            ASSERT(CurrentPart->Volume->FormatState == Formatted);
             return CurrentPart;
         }
     }
@@ -1104,6 +1169,8 @@ FsVolCommitOpsQueue(
 
     ASSERT(PartitionList && InstallPartition && SystemPartition);
 
+    // TODO: Do all pending volume unmounts.
+
     /* Commit all partition changes to all the disks */
     if (!WritePartitionsToDisk(PartitionList))
     {
@@ -1123,8 +1190,8 @@ FsVolCommitOpsQueue(
      * we must perform a filesystem check of both the system and the
      * installation partitions.
      */
-    SystemPartition->Volume.NeedsCheck = TRUE;
-    InstallPartition->Volume.NeedsCheck = TRUE;
+    SystemPartition->Volume->NeedsCheck = TRUE;
+    InstallPartition->Volume->NeedsCheck = TRUE;
 
     Result = FsVolCallback(Context,
                            FSVOLNOTIFY_STARTQUEUE,
@@ -1168,10 +1235,10 @@ NextFormat:
             ASSERT(SystemPartition->IsPartitioned);
 
             if ((SystemPartition != InstallPartition) &&
-                (SystemPartition->Volume.FormatState == Unformatted))
+                (SystemPartition->Volume->FormatState == Unformatted))
             {
                 PartEntry = SystemPartition;
-                PartEntry->Volume.NeedsCheck = TRUE;
+                PartEntry->Volume->NeedsCheck = TRUE;
 
                 // TODO: Should we let the user use a custom file-system,
                 // or should we always use FAT(32) for it?
@@ -1183,15 +1250,15 @@ NextFormat:
             else
             {
                 PartEntry = InstallPartition;
-                PartEntry->Volume.NeedsCheck = TRUE;
+                PartEntry->Volume->NeedsCheck = TRUE;
 
                 if (SystemPartition != InstallPartition)
                 {
                     /* The system partition is separate, so it had better be formatted! */
-                    ASSERT(SystemPartition->Volume.FormatState == Formatted);
+                    ASSERT(SystemPartition->Volume->FormatState == Formatted);
 
                     /* Require a filesystem check on the system partition too */
-                    SystemPartition->Volume.NeedsCheck = TRUE;
+                    SystemPartition->Volume->NeedsCheck = TRUE;
                 }
 
                 DPRINT1("FormatState: Start --> FormatInstallPartition\n");
@@ -1203,7 +1270,7 @@ NextFormat:
         case FormatSystemPartition:
         {
             PartEntry = InstallPartition;
-            PartEntry->Volume.NeedsCheck = TRUE;
+            PartEntry->Volume->NeedsCheck = TRUE;
 
             DPRINT1("FormatState: FormatSystemPartition --> FormatInstallPartition\n");
             FormatState = FormatInstallPartition;
@@ -1222,7 +1289,7 @@ NextFormat:
             PartEntry = GetNextUnformattedPartition(PartitionList, PartEntry);
             if (PartEntry)
             {
-                PartEntry->Volume.NeedsCheck = TRUE;
+                PartEntry->Volume->NeedsCheck = TRUE;
 
                 if (FormatState == FormatInstallPartition)
                     DPRINT1("FormatState: FormatInstallPartition --> FormatOtherPartition\n");
