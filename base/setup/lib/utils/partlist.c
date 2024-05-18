@@ -793,6 +793,15 @@ AddPartitionToDisk(
         return;
     }
 
+    /* If we've got an LDM partition, mark the disk as dynamic */
+    if (PartitionInfo->PartitionType == PARTITION_LDM /* ||
+        PartitionInfo->PartitionType == 0x8E || // Linux LVM
+        PartitionInfo->PartitionType == PARTITION_SPACES_DATA ||
+        PartitionInfo->PartitionType == PARTITION_SPACES */)
+    {
+        DiskEntry->IsDynamic = TRUE;
+    }
+
     PartEntry = RtlAllocateHeap(ProcessHeap,
                                 HEAP_ZERO_MEMORY,
                                 sizeof(PARTENTRY));
@@ -1470,6 +1479,10 @@ AddDiskToList(
         DPRINT1("Disk %lu of identifier '%S' is fixed\n", DiskNumber, Identifier);
     }
 
+    /* Default to basic disk, the actual type will be determined
+     * when enumerating partitions below */
+    DiskEntry->IsDynamic = FALSE;
+
 //    DiskEntry->Checksum = Checksum;
 //    DiskEntry->Signature = Signature;
     DiskEntry->BiosFound = FALSE;
@@ -1725,6 +1738,9 @@ AddDiskToList(
     }
 
     ScanForUnpartitionedDiskSpace(DiskEntry);
+
+    if (DiskEntry->IsDynamic)
+        DPRINT1("Dynamic disk detected, not currently supported by SETUP!\n");
 }
 
 /*
