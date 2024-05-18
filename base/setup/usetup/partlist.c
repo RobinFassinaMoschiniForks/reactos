@@ -154,6 +154,7 @@ PartitionDescription(
     size_t cchBufferSize = cchBuffer;
     ULONGLONG PartSize;
     PCSTR Unit;
+    PVOLENTRY Volume = PartEntry->Volume;
 
     /* Get the partition size */
     PartSize = GetPartEntrySizeInBytes(PartEntry);
@@ -204,8 +205,8 @@ PartitionDescription(
     RtlStringCchPrintfExA(pBuffer, cchBufferSize,
                           &pBuffer, &cchBufferSize, 0,
                           "%c%c %c %s(%lu) ",
-                          (PartEntry->DriveLetter == 0) ? '-' : (CHAR)PartEntry->DriveLetter,
-                          (PartEntry->DriveLetter == 0) ? '-' : ':',
+                          !Volume || (Volume->Info.DriveLetter == 0) ? '-' : (CHAR)Volume->Info.DriveLetter,
+                          !Volume || (Volume->Info.DriveLetter == 0) ? '-' : ':',
                           PartEntry->BootIndicator ? '*' : ' ',
                           PartEntry->LogicalPartition ? "  " : "", // Optional indentation
                           PartEntry->PartitionNumber);
@@ -215,16 +216,16 @@ PartitionDescription(
      * (if any) and the file system name. Otherwise, display the partition
      * type if it's not a new partition.
      */
-    if (!PartEntry->New && *PartEntry->FileSystem &&
-        _wcsicmp(PartEntry->FileSystem, L"RAW") != 0)
+    if (!PartEntry->New && Volume && *Volume->Info.FileSystem &&
+        _wcsicmp(Volume->Info.FileSystem, L"RAW") != 0)
     {
         size_t cchLabelSize = 0;
-        if (*PartEntry->VolumeLabel)
+        if (*Volume->Info.VolumeLabel)
         {
             RtlStringCchPrintfExA(pBuffer, cchBufferSize,
                                   &pBuffer, &cchLabelSize, 0,
                                   "\"%-.11S\" ",
-                                  PartEntry->VolumeLabel);
+                                  Volume->Info.VolumeLabel);
             cchLabelSize = cchBufferSize - cchLabelSize; // Actual length of the label part.
             cchBufferSize -= cchLabelSize; // And reset cchBufferSize to what it should be.
         }
@@ -237,7 +238,7 @@ PartitionDescription(
                               /* The minimum length can be at most 11 since
                                * cchLabelSize can be at most == 11 + 3 == 14 */
                               25 - min(cchLabelSize, 25),
-                              PartEntry->FileSystem);
+                              Volume->Info.FileSystem);
     }
     else
     {
@@ -275,7 +276,7 @@ PartitionDescription(
     /* Show the remaining free space only if a FS is mounted */
     // FIXME: We don't support that yet!
 #if 0
-    if (*PartEntry->FileSystem)
+    if (Volume && *Volume->Info.FileSystem)
     {
         RtlStringCchPrintfA(pBuffer, cchBufferSize,
                             "%*s%6I64u %s (%6I64u %s %s)",

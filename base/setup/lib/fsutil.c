@@ -754,6 +754,30 @@ Quit:
 //
 
 NTSTATUS
+ChkdskVolume(
+    _In_ PVOLINFO Volume,
+    _In_ BOOLEAN FixErrors,
+    _In_ BOOLEAN Verbose,
+    _In_ BOOLEAN CheckOnlyIfDirty,
+    _In_ BOOLEAN ScanDrive,
+    _In_opt_ PFMIFSCALLBACK Callback)
+{
+    /* HACK: Do not try to check a volume with an unknown filesystem */
+    if (!*Volume->FileSystem)
+        return STATUS_SUCCESS;
+
+    /* Check the volume */
+    DPRINT("Volume->DeviceName: %S\n", Volume->DeviceName);
+    return ChkdskFileSystem(Volume->DeviceName,
+                            Volume->FileSystem,
+                            FixErrors,
+                            Verbose,
+                            CheckOnlyIfDirty,
+                            ScanDrive,
+                            Callback);
+}
+
+NTSTATUS
 ChkdskPartition(
     _In_ PPARTENTRY PartEntry,
     _In_ BOOLEAN FixErrors,
@@ -763,38 +787,66 @@ ChkdskPartition(
     _In_ PFMIFSCALLBACK Callback)
 {
     NTSTATUS Status;
-    PDISKENTRY DiskEntry = PartEntry->DiskEntry;
-    // UNICODE_STRING PartitionRootPath;
-    WCHAR PartitionRootPath[MAX_PATH]; // PathBuffer
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
+    ASSERT(PartEntry->Volume);
 
-    /* HACK: Do not try to check a partition with an unknown filesystem */
-    if (!*PartEntry->FileSystem)
+    // if (!PartEntry->Volume) { check_raw_sectors(); } else { check_FS(); }
+
+    /* Check the associated volume */
+    Status = ChkdskVolume(&PartEntry->Volume->Info,
+                          FixErrors,
+                          Verbose,
+                          CheckOnlyIfDirty,
+                          ScanDrive,
+                          Callback);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    PartEntry->Volume->NeedsCheck = FALSE;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+FormatVolume(
+    _In_ PVOLINFO Volume,
+    _In_ PCWSTR FileSystemName,
+    _In_ FMIFS_MEDIA_FLAG MediaFlag,
+    _In_ PCWSTR Label,
+    _In_ BOOLEAN QuickFormat,
+    _In_ ULONG ClusterSize,
+    _In_opt_ PFMIFSCALLBACK Callback)
+{
+    NTSTATUS Status;
+
+    if (!FileSystemName || !*FileSystemName)
     {
-        PartEntry->NeedsCheck = FALSE;
-        return STATUS_SUCCESS;
+        DPRINT1("No file system specified?\n");
+        return STATUS_UNRECOGNIZED_VOLUME;
     }
 
-    /* Set PartitionRootPath */
-    RtlStringCchPrintfW(PartitionRootPath, ARRAYSIZE(PartitionRootPath),
-                        L"\\Device\\Harddisk%lu\\Partition%lu",
-                        DiskEntry->DiskNumber,
-                        PartEntry->PartitionNumber);
-    DPRINT("PartitionRootPath: %S\n", PartitionRootPath);
-
-    /* Check the partition */
-    Status = ChkdskFileSystem(PartitionRootPath,
-                              PartEntry->FileSystem,
-                              FixErrors,
-                              Verbose,
-                              CheckOnlyIfDirty,
-                              ScanDrive,
+    /* Format the volume */
+    DPRINT("Volume->DeviceName: %S\n", Volume->DeviceName);
+    Status = FormatFileSystem(Volume->DeviceName,
+                              FileSystemName,
+                              MediaFlag,
+                              Label,
+                              QuickFormat,
+                              ClusterSize,
                               Callback);
     if (!NT_SUCCESS(Status))
         return Status;
 
-    PartEntry->NeedsCheck = FALSE;
+//
+// TODO: Here, call a partlist.c function that updates
+// the actual FS name and the label fields of the volume.
+//
+
+    /* Set the new volume's file system proper */
+    RtlStringCbCopyW(PartEntry->FileSystem,
+                     sizeof(PartEntry->FileSystem),
+                     FileSystemName);
+
     return STATUS_SUCCESS;
 }
 
@@ -811,8 +863,6 @@ FormatPartition(
     NTSTATUS Status;
     PDISKENTRY DiskEntry = PartEntry->DiskEntry;
     UCHAR PartitionType;
-    // UNICODE_STRING PartitionRootPath;
-    WCHAR PartitionRootPath[MAX_PATH]; // PathBuffer
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
 
@@ -876,37 +926,22 @@ FormatPartition(
         return STATUS_PARTITION_FAILURE;
     }
 
-    /* Set PartitionRootPath */
-    RtlStringCchPrintfW(PartitionRootPath, ARRAYSIZE(PartitionRootPath),
-                        L"\\Device\\Harddisk%lu\\Partition%lu",
-                        DiskEntry->DiskNumber,
-                        PartEntry->PartitionNumber);
-    DPRINT("PartitionRootPath: %S\n", PartitionRootPath);
+    /* We must have an associated volume now */
+    ASSERT(PartEntry->Volume);
 
-    /* Format the partition */
-    Status = FormatFileSystem(PartitionRootPath,
-                              FileSystemName,
-                              MediaFlag,
-                              Label,
-                              QuickFormat,
-                              ClusterSize,
-                              Callback);
+    /* Format the associated volume */
+    Status = FormatVolume(&PartEntry->Volume->Info,
+                          FileSystemName,
+                          MediaFlag,
+                          Label,
+                          QuickFormat,
+                          ClusterSize,
+                          Callback);
     if (!NT_SUCCESS(Status))
         return Status;
 
-//
-// TODO: Here, call a partlist.c function that update the actual
-// FS name and the label fields of the volume.
-//
-    PartEntry->FormatState = Formatted;
-
-    /* Set the new partition's file system proper */
-    RtlStringCbCopyW(PartEntry->FileSystem,
-                     sizeof(PartEntry->FileSystem),
-                     FileSystemName);
-
-    PartEntry->New = FALSE;
-
+    PartEntry->Volume->FormatState = Formatted;
+    PartEntry->Volume->New = FALSE;
     return STATUS_SUCCESS;
 }
 
@@ -926,6 +961,7 @@ DoFormatting(
     FORMAT_VOLUME_INFO FmtInfo;
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
+    ASSERT(PartEntry->Volume);
 
     RtlZeroMemory(&FmtInfo, sizeof(FmtInfo));
     FmtInfo.PartEntry = PartEntry;
@@ -983,16 +1019,17 @@ DoChecking(
     CHECK_VOLUME_INFO ChkInfo;
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
+    ASSERT(PartEntry->Volume);
 
 #if 0
     /* HACK: Do not try to check a partition with an unknown filesystem */
-    if (!*PartEntry->FileSystem)
+    if (!*PartEntry->Volume->Info.FileSystem)
     {
-        PartEntry->NeedsCheck = FALSE;
+        PartEntry->Volume->NeedsCheck = FALSE;
         return FSVOL_SKIP;
     }
 #else
-    ASSERT(*PartEntry->FileSystem);
+    ASSERT(*PartEntry->Volume->Info.FileSystem);
 #endif
 
     RtlZeroMemory(&ChkInfo, sizeof(ChkInfo));
